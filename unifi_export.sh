@@ -2,6 +2,7 @@
 #
 # unifi_export.sh — Export UniFi device inventory to a TSV file
 # https://github.com/rollopack/unifi-site-devices
+# (c) 2026 Rolland Gabriel (https://github.com/rollopack)
 # SPDX-License-Identifier: GPL-3.0-only
 # Version 1.3.0
 
