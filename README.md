@@ -50,7 +50,7 @@ Password is prompted interactively. It is never accepted as a command-line argum
 
 # Full options
 ./unifi_export.sh \
-  -c https://192.168.1.1:8443 \
+  -c https://controller.unifi.net:8443 \
   -s abcdef12 \
   -u admin \
   -o my_devices.txt \
@@ -61,7 +61,7 @@ Password is prompted interactively. It is never accepted as a command-line argum
 ./unifi_export.sh -s abcdef12 -p /proxy/network
 
 # Using environment variables
-export CONTROLLER=https://192.168.1.1:8443
+export CONTROLLER=https://controller.unifi.net:8443
 export SITE=abcdef12
 export USER=admin
 ./unifi_export.sh
@@ -112,4 +112,4 @@ The session cookie is stored in a temporary file and cleaned up on exit via `tra
 
 ## License
 
-MIT
+GNU General Public License v3.0
