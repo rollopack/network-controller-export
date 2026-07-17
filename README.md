@@ -1,6 +1,6 @@
 # UniFi Device Export
 
-Export UniFi device inventory (APs, switches, gateways) from a local UniFi controller to a tab-separated file.
+Export UniFi device inventory (APs, switches, gateways) from a UniFi controller to a tab-separated file.
 
 ## Requirements
 
@@ -29,7 +29,7 @@ If `-s` is omitted, the script shows an interactive list of available sites to c
 |------|----------|-------------|---------|
 | `-c` | `url` | Controller URL (including port) | `https://controller.unifi.net:8443` |
 | `-s` | `id` | Site ID | prompt interactively if omitted |
-| `-u` | `username` | Local UniFi admin username (not ui.com account) | `admin` |
+| `-u` | `username` | UniFi admin username (not ui.com account) | `admin` |
 | `-o` | `file` | Output file path | `Unifi-devices_<site>.txt` |
 | `-O` | `ip` / `desc` | Sort order | `ip` |
 | `-H` | — | Hide offline devices (state != 1) | Off (export all) |
@@ -106,7 +106,7 @@ The session cookie is stored in a temporary file and cleaned up on exit via `tra
 
 ## Limitations
 
-- Works with **local** UniFi controllers (not cloud / ui.com)
+- Works with UniFi controllers (not cloud / ui.com)
 - The `-p` option for UniFi OS (UDM-Pro, UXG) proxy-based API paths is provided **but has not been tested**. The default endpoint is `/api/s/<site>/stat/device`.
 - Tested with UniFi Network Controller v6 and v7
 
