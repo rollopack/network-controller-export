@@ -1,12 +1,13 @@
-# UniFi Device Export
+# UniFi Export
 
-Export UniFi device inventory (APs, switches, gateways) from a UniFi controller to a tab-separated file.
+Export UniFi device inventory (APs, switches, gateways) or active clients from a UniFi controller to a tab-separated file.
 
 ## Requirements
 
 - Bash 4+
 - [curl](https://curl.se/)
 - [jq](https://jqlang.github.io/jq/)
+- `column` (from util-linux, usually pre-installed) — optional, falls back to raw TSV if missing
 
 ## Installation
 
@@ -21,7 +22,7 @@ chmod +x unifi_export.sh
 ./unifi_export.sh [options]
 ```
 
-If `-s` is omitted, the script shows an interactive list of available sites to choose from.
+If `-s` is omitted, the script shows an interactive list of available sites to choose from. In interactive mode, after selecting the site you are also asked what to export (Devices, Clients, or Both).
 
 ### Options
 
@@ -30,10 +31,11 @@ If `-s` is omitted, the script shows an interactive list of available sites to c
 | `-c` | `url` | Controller URL (including port) | `https://controller.unifi.net:8443` |
 | `-s` | `id` | Site ID | prompt interactively if omitted |
 | `-u` | `username` | UniFi admin username (not ui.com account) | `admin` |
-| `-o` | `file` | Output file path | `Unifi-devices_<site>.txt` |
+| `-o` | `file` | Output file path | `Unifi-<type>_<site>.txt` |
 | `-O` | `ip` / `desc` | Sort order | `ip` |
-| `-H` | — | Hide offline devices (state != 1) | Off (export all) |
+| `-H` | — | Hide offline devices (state != 1) — devices only | Off (export all) |
 | `-p` | `path` | API path prefix for UniFi OS (e.g. `/proxy/network`) | none |
+| `-T` | `devices` / `clients` / `both` | Export type: devices, active clients, or both | `devices` |
 | `-V` | — | Show version | — |
 | `-h` | — | Show help | — |
 
@@ -60,6 +62,12 @@ Password is prompted interactively. It is never accepted as a command-line argum
 # UniFi OS (UDM-Pro, UXG) with proxy path
 ./unifi_export.sh -s abcdef12 -p /proxy/network
 
+# Export active clients
+./unifi_export.sh -T clients
+
+# Export both devices and clients
+./unifi_export.sh -T both
+
 # Using environment variables
 export CONTROLLER=https://controller.unifi.net:8443
 export SITE=abcdef12
@@ -69,29 +77,36 @@ export USER=admin
 
 ## Output
 
-A tab-separated file with IP, MAC, Model, and Description columns:
+A tab-separated file, formatted with `column -t` when available for perfect alignment. The file can be opened in Excel, Google Sheets, or any spreadsheet tool (tab-delimited import).
+
+**Devices** (`-T devices`, default): IP, MAC, Model, Description
 
 ```
 ...::: Devices :::...
 
-IP              MAC                Model  Description
-192.168.178.221 18:e8:29:45:6e:97  US8P60 Switch 1 | Rack
-192.168.178.222 ac:8b:a9:ba:4c:0b  USF5P  Switch 2
-192.168.178.231 f0:9f:c2:f0:3e:6c  U7LT   AP 1 | Reception
-192.168.178.232 78:45:58:1c:57:94  U7IW   AP 2 | Room 2
-192.168.178.233 70:a7:41:8c:84:c2  U7IW   AP 3 | Room 4
-192.168.178.234 70:a7:41:8c:82:fa  U7IW   AP 4 | Room 6
-192.168.178.235 70:a7:41:8c:83:16  U7IW   AP 5 | Room 8
-192.168.178.236 70:a7:41:8c:85:2f  U7IW   AP 6 | Room Elena
+IP               MAC                Model  Description
+192.168.178.221  18:e8:29:45:6e:97  US8P60 Switch 1 | Rack
+192.168.178.222  ac:8b:a9:ba:4c:0b  USF5P  Switch 2
+192.168.178.231  f0:9f:c2:f0:3e:6c  U7LT   AP 1 | Salone
 ```
 
-The file can be opened in Excel, Google Sheets, or any spreadsheet tool (tab-delimited).
+**Clients** (`-T clients`): IP, MAC, Vendor, Hostname, Connected to
+
+```
+...::: Clients :::...
+
+IP               MAC                 Fornitore                            Hostname       Connesso a
+192.168.1.100    78:8a:20:80:47:d1   Apple                                iPhone-Rosa    AP 1 | Salone
+192.168.1.101    ac:8b:a9:ba:4c:0b   Intel                                PC-Mario       AP 2 | Camera 2
+192.168.1.102    f0:9f:c2:f0:3e:6c   Samsung                              Galaxy-S25     AP 2 | Camera 2
+192.168.1.103    00:19:cb:3e:96:0b   Zyxel Communications Corporation                    Wired
+```
 
 ## How It Works
 
 1. **Login** — authenticates to the controller via `POST /api/login`
 2. **Fetch sites** — retrieves the list of available sites via `GET /api/self/sites` and validates that the requested site exists (or shows an interactive picker)
-3. **Fetch devices** — retrieves device list for the validated site via `GET /api/s/<site>/stat/device`
+3. **Fetch data** — retrieves the appropriate list based on export type (devices via `GET /api/s/<site>/stat/device`; clients via `GET /api/s/<site>/stat/sta`). With `-T both` both endpoints are queried sequentially.
 4. **Filter & sort** — optionally filters out offline devices, sorts by IP or name
 5. **Write output** — writes a TSV file to disk
 

@@ -29,28 +29,32 @@ USER="${USER:-admin}"
 SORT="ip"   # ip | desc
 OUTFILE=""
 HIDE_OFFLINE=false
-VERSION="1.3.0"
+EXPORT_TYPE="${EXPORT_TYPE:-devices}"
+HAS_T=false
+VERSION="1.5.0"
 
 usage() {
-  echo "Usage: $0 [-s <site_id>] [-c controller_url] [-u username] [-o output_file] [-O ip|desc] [-H] [-p api_path]"
+  echo "Usage: $0 [-s <site_id>] [-c controller_url] [-u username] [-o output_file] [-O ip|desc] [-H] [-p api_path] [-T devices|clients|both]"
   echo "  -s <id>  : site ID (if omitted, pick interactively)"
   echo "  -c <url> : controller URL (default: $CONTROLLER)"
   echo "  -u <usr> : controller username (default: $USER)"
-  echo "  -o <file>: output file (default: Unifi-devices_<site>.txt)"
+  echo "  -o <file>: output file (default: Unifi-<type>_<site>.txt)"
   echo "  -O ip    : order by IP (default)"
   echo "  -O desc  : order by Description (name)"
-  echo "  -H       : hide offline devices"
+  echo "  -H       : hide offline devices (applies to devices only)"
   echo "  -p <path>: API path prefix, e.g. /proxy/network for UniFi OS (default: none)"
+  echo "  -T <type>: export type: devices (default), clients, both"
   echo "  -V       : show version"
   echo
   echo "Example:"
   echo "  $0 -s abcdef12 -c https://controller.unifi.net:8443 -u admin -O desc"
   echo "  $0 -s abcdef12 -p /proxy/network        # UniFi OS (UDM)"
   echo "  $0                                       # interactive site selection"
+  echo "  $0 -T clients                            # export active clients"
   exit 1
 }
 
-while getopts "c:s:u:o:O:Hp:Vh" opt; do
+while getopts "c:s:u:o:O:Hp:T:Vh" opt; do
   case "$opt" in
     c) CONTROLLER="$OPTARG" ;;
     s) SITE="$OPTARG" ;;
@@ -64,6 +68,13 @@ while getopts "c:s:u:o:O:Hp:Vh" opt; do
       ;;
     H) HIDE_OFFLINE=true ;;
     p) API_PATH="$OPTARG" ;;
+    T)
+      HAS_T=true
+      case "$OPTARG" in
+        devices|clients|both) EXPORT_TYPE="$OPTARG" ;;
+        *) echo "Invalid value for -T, use 'devices', 'clients' or 'both'." >&2; exit 1 ;;
+      esac
+      ;;
     V) echo "unifi_export.sh v$VERSION"; exit 0 ;;
     h|*) usage ;;
   esac
@@ -72,6 +83,11 @@ done
 if ! command -v jq >/dev/null 2>&1; then
   echo "Error: jq not found. Install jq and try again." >&2
   exit 1
+fi
+
+HAS_COLUMN=false
+if command -v column >/dev/null 2>&1; then
+  HAS_COLUMN=true
 fi
 
 echo "unifi_export.sh v$VERSION  Copyright (C) 2026 Rolland Gabriel"
@@ -119,6 +135,19 @@ if [[ -z "$SITE" ]]; then
     exit 1
   fi
   echo "Selected site: $SITE"
+  echo
+  if ! "$HAS_T"; then
+    echo "What to export?"
+    PS3="Choose (1-3): "
+    select opt in "Devices" "Clients" "Both"; do
+      case "$opt" in
+        "Devices") EXPORT_TYPE="devices"; break ;;
+        "Clients") EXPORT_TYPE="clients"; break ;;
+        "Both")    EXPORT_TYPE="both";    break ;;
+        *) echo "Invalid choice";;
+      esac
+    done
+  fi
 else
   SITE_VALID=$(echo "$SITES_JSON" | jq -r --arg site "$SITE" '.data[] | select(.name == $site) | "ok"')
   if [[ -z "$SITE_VALID" ]]; then
@@ -129,14 +158,34 @@ else
   fi
 fi
 
+case "$EXPORT_TYPE" in
+  both)  TYPES=(devices clients) ;;
+  *)     TYPES=("$EXPORT_TYPE") ;;
+esac
+
+for EXPORT_TYPE in "${TYPES[@]}"; do
+
 if [[ -z "$OUTFILE" ]]; then
-  OUTFILE="Unifi-devices_${SITE}.txt"
+  OUTFILE="Unifi-${EXPORT_TYPE}_${SITE}.txt"
 fi
 
-echo "Fetching device list for site '$SITE' ..."
+case "$EXPORT_TYPE" in
+  devices)
+    ENDPOINT="stat/device"
+    LABEL="device"
+    LABEL_PLURAL="devices"
+    ;;
+  clients)
+    ENDPOINT="stat/sta"
+    LABEL="client"
+    LABEL_PLURAL="clients"
+    ;;
+esac
+
+echo "Fetching $LABEL_PLURAL list for site '$SITE' ..."
 JSON="$(curl -sk -b "$COOKIE_FILE" \
-  "$CONTROLLER${API_PATH}/api/s/$SITE/stat/device")" || {
-  echo "Error: failed to fetch devices from $CONTROLLER${API_PATH}/api/s/$SITE/stat/device" >&2
+  "$CONTROLLER${API_PATH}/api/s/$SITE/$ENDPOINT")" || {
+  echo "Error: failed to fetch $LABEL_PLURAL from $CONTROLLER${API_PATH}/api/s/$SITE/$ENDPOINT" >&2
   exit 1
 }
 
@@ -149,30 +198,100 @@ fi
 
 COUNT="$(echo "$JSON" | jq '.data | length')"
 if [[ "$COUNT" -eq 0 ]]; then
-  echo "Warning: no devices found for site '$SITE'." >&2
+  echo "Warning: no $LABEL_PLURAL found for site '$SITE'." >&2
 fi
 
 echo "Writing output to $OUTFILE (order: $SORT) ..."
 
-{
-  echo "...::: Devices :::..."
-  echo
-  printf "IP\t\tMAC\t\t\tModel\tDescription\n"
-  echo "$JSON" | jq -r --arg sort "$SORT" --arg hide_offline "$HIDE_OFFLINE" '
-    [ .data[]
-      | select($hide_offline == "false" or .state == 1)
-      | {ip, mac, model: (.model // ""), name}
-    ]
-    | (if $sort == "desc"
-       then
-         sort_by(.name)
-       else
-          # numeric IP sort: 192.168.1.11 < 192.168.1.117 < 192.168.1.200
-         sort_by(.ip | split(".") | map(tonumber))
-       end)
-    | .[]
-    | "\(.ip)\t\(.mac)\t\(.model)\t\(.name)"
-  '
-} > "$OUTFILE"
+if [[ "$EXPORT_TYPE" == "devices" ]]; then
+  if "$HAS_COLUMN"; then
+    {
+      echo "...::: Devices :::..."
+      echo
+      {
+        printf "IP\tMAC\tModel\tDescription\n"
+        echo "$JSON" | jq -r --arg sort "$SORT" --arg hide_offline "$HIDE_OFFLINE" '
+          [ .data[]
+            | select($hide_offline == "false" or .state == 1)
+            | {ip, mac, model: (.model // ""), name}
+          ]
+          | (if $sort == "desc"
+             then
+               sort_by(.name)
+             else
+               sort_by((.ip // "") | split(".") | map(tonumber))
+             end)
+          | .[]
+          | "\(.ip)\t\(.mac)\t\(.model)\t\(.name)"
+        '
+      } | column -t -s $'\t'
+    } > "$OUTFILE"
+  else
+    {
+      echo "...::: Devices :::..."
+      echo
+      printf "IP\tMAC\tModel\tDescription\n"
+      echo "$JSON" | jq -r --arg sort "$SORT" --arg hide_offline "$HIDE_OFFLINE" '
+        [ .data[]
+          | select($hide_offline == "false" or .state == 1)
+          | {ip, mac, model: (.model // ""), name}
+        ]
+        | (if $sort == "desc"
+           then
+             sort_by(.name)
+           else
+             sort_by((.ip // "") | split(".") | map(tonumber))
+           end)
+        | .[]
+        | "\(.ip)\t\(.mac)\t\(.model)\t\(.name)"
+      '
+    } > "$OUTFILE"
+  fi
+else
+  if "$HAS_COLUMN"; then
+    {
+      echo "...::: Clients :::..."
+      echo
+      {
+        printf "IP\tMAC\tFornitore\tHostname\tConnesso a\n"
+        echo "$JSON" | jq -r --arg sort "$SORT" '
+          [ .data[]
+            | {ip, mac, vendor: (.oui // ""), hostname: (.hostname // ""), ap: (.ap_name // "Wired")}
+          ]
+          | (if $sort == "desc"
+             then
+               sort_by(.hostname)
+             else
+               sort_by((.ip // "") | split(".") | map(tonumber))
+             end)
+          | .[]
+          | "\(.ip)\t\(.mac)\t\(.vendor)\t\(.hostname)\t\(.ap)"
+        '
+      } | column -t -s $'\t'
+    } > "$OUTFILE"
+  else
+    {
+      echo "...::: Clients :::..."
+      echo
+      printf "IP\tMAC\tFornitore\tHostname\tConnesso a\n"
+      echo "$JSON" | jq -r --arg sort "$SORT" '
+        [ .data[]
+          | {ip, mac, vendor: (.oui // ""), hostname: (.hostname // ""), ap: (.ap_name // "Wired")}
+        ]
+        | (if $sort == "desc"
+           then
+             sort_by(.hostname)
+           else
+             sort_by((.ip // "") | split(".") | map(tonumber))
+           end)
+        | .[]
+        | "\(.ip)\t\(.mac)\t\(.vendor)\t\(.hostname)\t\(.ap)"
+      '
+    } > "$OUTFILE"
+  fi
+fi
 
 echo "Done. File generated: $OUTFILE"
+OUTFILE=""
+
+done
