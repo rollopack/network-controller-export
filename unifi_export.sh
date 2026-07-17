@@ -2,9 +2,22 @@
 #
 # unifi_export.sh — Export UniFi device inventory to a TSV file
 # https://github.com/rollopack/unifi-site-devices
-# (c) 2026 Rolland Gabriel (https://github.com/rollopack)
-# SPDX-License-Identifier: GPL-3.0-only
-# Version 1.3.0
+#
+# Copyright (C) 2026 Rolland Gabriel (https://github.com/rollopack)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+#
 
 set -euo pipefail
 
@@ -60,6 +73,12 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "Error: jq not found. Install jq and try again." >&2
   exit 1
 fi
+
+echo "unifi_export.sh v$VERSION  Copyright (C) 2026 Rolland Gabriel"
+echo "This program comes with ABSOLUTELY NO WARRANTY; see LICENSE."
+echo "This is free software, and you are welcome to redistribute it"
+echo "under certain conditions."
+echo
 
 read -s -p "Password for user '$USER': " PASS
 echo

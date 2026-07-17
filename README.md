@@ -113,3 +113,5 @@ The session cookie is stored in a temporary file and cleaned up on exit via `tra
 ## License
 
 GNU General Public License v3.0
+
+Copyright (C) 2026 Rolland Gabriel (https://github.com/rollopack)
