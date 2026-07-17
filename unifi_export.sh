@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # unifi_export.sh — Export UniFi device inventory to a TSV file
-# https://github.com/rollopack/unifi-site-devices
+# https://github.com/rollopack/unifi-network-export
 #
 # Copyright (C) 2026 Rolland Gabriel (https://github.com/rollopack)
 #

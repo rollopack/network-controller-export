@@ -12,7 +12,7 @@ Export UniFi device inventory (APs, switches, gateways) or active clients from a
 ## Installation
 
 ```bash
-curl -LO https://raw.githubusercontent.com/rollopack/unifi-site-devices/main/unifi_export.sh
+curl -LO https://raw.githubusercontent.com/rollopack/unifi-network-export/main/unifi_export.sh
 chmod +x unifi_export.sh
 ```
 
