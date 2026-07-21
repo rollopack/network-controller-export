@@ -22,16 +22,16 @@
 set -euo pipefail
 
 # Default
-CONTROLLER="${CONTROLLER:-https://controller.unifi.net:8443}"
+CONTROLLER="${CONTROLLER:-https://uos.unifi.net:11443}"
 SITE="${SITE:-}"
-API_PATH="${API_PATH:-}"
+API_PATH="${API_PATH:-/proxy/network}"
 USER="${USER:-admin}"
 SORT="ip"   # ip | desc
 OUTFILE=""
 HIDE_OFFLINE=false
 EXPORT_TYPE="${EXPORT_TYPE:-devices}"
 HAS_T=false
-VERSION="1.5.0"
+VERSION="2.0.0"
 
 usage() {
   echo "Usage: $0 [-s <site_id>] [-c controller_url] [-u username] [-o output_file] [-O ip|desc] [-H] [-p api_path] [-T devices|clients|both]"
@@ -42,15 +42,16 @@ usage() {
   echo "  -O ip    : order by IP (default)"
   echo "  -O desc  : order by Description (name)"
   echo "  -H       : hide offline devices (applies to devices only)"
-  echo "  -p <path>: API path prefix, e.g. /proxy/network for UniFi OS (default: none)"
+  echo "  -p <path>: API path prefix (default: /proxy/network for UniFi OS)."
+  echo "             Set to empty (-p \"\") for software controller (no proxy)."
   echo "  -T <type>: export type: devices (default), clients, both"
   echo "  -V       : show version"
   echo
   echo "Example:"
-  echo "  $0 -s abcdef12 -c https://controller.unifi.net:8443 -u admin -O desc"
-  echo "  $0 -s abcdef12 -p /proxy/network        # UniFi OS (UDM)"
-  echo "  $0                                       # interactive site selection"
-  echo "  $0 -T clients                            # export active clients"
+  echo "  $0 -s abcdef12 -c https://192.168.1.1 -u admin         # UniFi OS (default)"
+  echo "  $0 -s abcdef12 -c uos.unifi.net:11443 -p \"\"      # software controller"
+  echo "  $0                                                    # interactive"
+  echo "  $0 -T clients                                         # export clients"
   exit 1
 }
 
@@ -102,24 +103,88 @@ echo
 COOKIE_FILE="$(mktemp)"
 trap 'rm -f "$COOKIE_FILE"' EXIT
 
+login_try() {
+  local ep="$1"
+  local mfa_token="${2:-}"
+  local mfa_session="${3:-}"
+  local mfa_cookie="${4:-}"
+  local data="{\"username\":\"$USER\",\"password\":\"$PASS\"}"
+  if [[ -n "$mfa_token" && -n "$mfa_session" ]]; then
+    data="{\"username\":\"$USER\",\"password\":\"$PASS\",\"mfaToken\":\"$mfa_token\",\"mfaSession\":\"$mfa_session\"}"
+  elif [[ -n "$mfa_token" ]]; then
+    data="{\"username\":\"$USER\",\"password\":\"$PASS\",\"mfaToken\":\"$mfa_token\"}"
+  fi
+  # Login is always at controller root (OS-level endpoint)
+  if [[ -n "$mfa_cookie" ]]; then
+    curl -sk -c "$COOKIE_FILE" -b "$COOKIE_FILE" -b "$mfa_cookie" \
+      -X POST "$CONTROLLER$ep" \
+      -H "Content-Type: application/json" \
+      -d "$data"
+  else
+    curl -sk -c "$COOKIE_FILE" \
+      -X POST "$CONTROLLER$ep" \
+      -H "Content-Type: application/json" \
+      -d "$data"
+  fi
+}
+
+login_ok() {
+  local json="$1"
+  local rc
+  rc=$(echo "$json" | jq -r '.meta.rc // "error"')
+  [[ "$rc" == "ok" ]] && return 0
+  # UniFi OS: successful login returns user profile (has unique_id)
+  echo "$json" | jq -e 'has("unique_id")' >/dev/null 2>&1 && return 0
+  return 1
+}
+
 echo "Logging in to $CONTROLLER ..."
-curl -sk -c "$COOKIE_FILE" \
-  -X POST "$CONTROLLER${API_PATH}/api/login" \
-  -H "Content-Type: application/json" \
-  -d "{\"username\":\"$USER\",\"password\":\"$PASS\"}" >/dev/null || {
-  echo "Error: login failed for user '$USER' on $CONTROLLER${API_PATH}/api/login" >&2
-  exit 1
+LOGIN_JSON="$(login_try "/api/auth/login")"
+
+login_ok "$LOGIN_JSON" || {
+  LOGIN_JSON="$(login_try "/api/login")"
+}
+
+login_ok "$LOGIN_JSON" || {
+  MFA_CODE="$(echo "$LOGIN_JSON" | jq -r '.code // ""')"
+  if [[ "$MFA_CODE" == "MFA_AUTH_REQUIRED" ]]; then
+    echo "MFA token required (email OTP). Check your email for a verification code."
+    read -s -p "Enter MFA code: " MFA_TOKEN
+    echo
+    MFA_COOKIE="$(echo "$LOGIN_JSON" | jq -r '.data.mfaCookie // ""')"
+    MFA_SESSION="${MFA_COOKIE#UBIC_2FA=}"
+
+    LOGIN_JSON="$(login_try "/api/auth/login" "$MFA_TOKEN" "$MFA_SESSION" "$MFA_COOKIE")"
+    login_ok "$LOGIN_JSON" || LOGIN_JSON="$(login_try "/api/login" "$MFA_TOKEN" "$MFA_SESSION" "$MFA_COOKIE")"
+  fi
+
+  if ! login_ok "$LOGIN_JSON"; then
+    echo "Error: login failed for user '$USER' on $CONTROLLER" >&2
+    echo "$LOGIN_JSON" | jq . >&2
+    exit 1
+  fi
 }
 
 echo "Fetching available sites ..."
-SITES_JSON="$(curl -sk -b "$COOKIE_FILE" "$CONTROLLER${API_PATH}/api/self/sites")" || {
-  echo "Error: failed to fetch sites from $CONTROLLER${API_PATH}/api/self/sites" >&2
-  exit 1
-}
-SITES_RC="$(echo "$SITES_JSON" | jq -r '.meta.rc')"
+SITES_JSON="$(curl -sk -b "$COOKIE_FILE" "$CONTROLLER${API_PATH}/api/self/sites" 2>/dev/null || true)"
+SITES_RC="$(echo "$SITES_JSON" | jq -r '.meta.rc // ""' 2>/dev/null || true)"
+
+# Fallback: try direct path (software controller behind reverse proxy)
 if [[ "$SITES_RC" != "ok" ]]; then
-  echo "Error fetching sites: meta.rc=$SITES_RC" >&2
-  echo "$SITES_JSON" | jq . >&2
+  SITES_JSON="$(curl -sk -b "$COOKIE_FILE" "$CONTROLLER/api/self/sites" 2>/dev/null || true)"
+  SITES_RC="$(echo "$SITES_JSON" | jq -r '.meta.rc // ""' 2>/dev/null || true)"
+  if [[ "$SITES_RC" == "ok" ]]; then
+    echo "Direct API path detected, clearing proxy prefix."
+    API_PATH=""
+  fi
+fi
+
+if [[ "$SITES_RC" != "ok" ]]; then
+  echo "Error: failed to fetch sites from $CONTROLLER${API_PATH}/api/self/sites" >&2
+  echo "Response:" >&2
+  echo "$SITES_JSON" | head -c 500 >&2
+  echo >&2
+  echo "If you are using a software controller, try -p \"\" to disable the proxy prefix." >&2
   exit 1
 fi
 
@@ -253,7 +318,7 @@ else
       echo "...::: Clients :::..."
       echo
       {
-        printf "IP\tMAC\tFornitore\tHostname\tConnesso a\n"
+        printf "IP\tMAC\tVendor\tHostname\tConnected to\n"
         echo "$JSON" | jq -r --arg sort "$SORT" '
           [ .data[]
             | {ip, mac, vendor: (.oui // ""), hostname: (.hostname // ""), ap: (.ap_name // "Wired")}
@@ -273,7 +338,7 @@ else
     {
       echo "...::: Clients :::..."
       echo
-      printf "IP\tMAC\tFornitore\tHostname\tConnesso a\n"
+      printf "IP\tMAC\tVendor\tHostname\tConnected to\n"
       echo "$JSON" | jq -r --arg sort "$SORT" '
         [ .data[]
           | {ip, mac, vendor: (.oui // ""), hostname: (.hostname // ""), ap: (.ap_name // "Wired")}

@@ -1,6 +1,6 @@
 # UniFi Export
 
-Export UniFi device inventory (APs, switches, gateways) or active clients from a UniFi controller to a tab-separated file.
+Export UniFi network devices (APs, switches, gateways) or active clients from a UniFi controller to a tab-separated file. Optimized for **UniFi OS** (UDM, UCG, UXG) — also works with network controllers via `-p ""`.
 
 ## Requirements
 
@@ -28,13 +28,13 @@ If `-s` is omitted, the script shows an interactive list of available sites to c
 
 | Flag | Argument | Description | Default |
 |------|----------|-------------|---------|
-| `-c` | `url` | Controller URL (including port) | `https://controller.unifi.net:8443` |
+| `-c` | `url` | Controller URL | `https://uos.unifi.net:11443` |
 | `-s` | `id` | Site ID | prompt interactively if omitted |
 | `-u` | `username` | UniFi admin username (not ui.com account) | `admin` |
 | `-o` | `file` | Output file path | `Unifi-<type>_<site>.txt` |
 | `-O` | `ip` / `desc` | Sort order | `ip` |
 | `-H` | — | Hide offline devices (state != 1) — devices only | Off (export all) |
-| `-p` | `path` | API path prefix for UniFi OS (e.g. `/proxy/network`) | none |
+| `-p` | `path` | API path prefix. Default `/proxy/network` for UniFi OS. Use `-p ""` for software controller (no proxy) | `/proxy/network` |
 | `-T` | `devices` / `clients` / `both` | Export type: devices, active clients, or both | `devices` |
 | `-V` | — | Show version | — |
 | `-h` | — | Show help | — |
@@ -44,23 +44,29 @@ Password is prompted interactively. It is never accepted as a command-line argum
 ### Examples
 
 ```bash
-# Interactive site selection
+# Interactive site selection (UniFi OS assumed by default)
 ./unifi_export.sh
 
-# Specify site directly
+# UniFi OS (default, proxy auto-detected)
 ./unifi_export.sh -s abcdef12
 
-# Full options
+# Software controller (disable proxy)
+./unifi_export.sh -s abcdef12 -p ""
+
+# Full options on UniFi OS
 ./unifi_export.sh \
-  -c https://controller.unifi.net:8443 \
+  -c https://192.168.1.1 \
   -s abcdef12 \
   -u admin \
   -o my_devices.txt \
   -O desc \
   -H
 
-# UniFi OS (UDM-Pro, UXG) with proxy path
-./unifi_export.sh -s abcdef12 -p /proxy/network
+# Network controller API at custom URL
+./unifi_export.sh \
+  -c https://controller.local:8443 \
+  -s abcdef12 \
+  -p ""
 
 # Export active clients
 ./unifi_export.sh -T clients
@@ -69,7 +75,7 @@ Password is prompted interactively. It is never accepted as a command-line argum
 ./unifi_export.sh -T both
 
 # Using environment variables
-export CONTROLLER=https://controller.unifi.net:8443
+export CONTROLLER=https://192.168.1.1
 export SITE=abcdef12
 export USER=admin
 ./unifi_export.sh
@@ -87,7 +93,8 @@ A tab-separated file, formatted with `column -t` when available for perfect alig
 IP               MAC                Model  Description
 192.168.178.221  18:e8:29:45:6e:97  US8P60 Switch 1 | Rack
 192.168.178.222  ac:8b:a9:ba:4c:0b  USF5P  Switch 2
-192.168.178.231  f0:9f:c2:f0:3e:6c  U7LT   AP 1 | Salone
+192.168.178.231  f0:9f:c2:f0:3e:6c  U7LT   AP 1
+192.168.178.232  24:a4:3c:0c:8b:03  BZ2    AP 5 | Garage
 ```
 
 **Clients** (`-T clients`): IP, MAC, Vendor, Hostname, Connected to
@@ -95,22 +102,21 @@ IP               MAC                Model  Description
 ```
 ...::: Clients :::...
 
-IP               MAC                 Fornitore                            Hostname       Connesso a
-192.168.1.100    78:8a:20:80:47:d1   Apple                                iPhone-Rosa    AP 1 | Salone
-192.168.1.101    ac:8b:a9:ba:4c:0b   Intel                                PC-Mario       AP 2 | Camera 2
-192.168.1.102    f0:9f:c2:f0:3e:6c   Samsung                              Galaxy-S25     AP 2 | Camera 2
-192.168.1.103    00:19:cb:3e:96:0b   Zyxel Communications Corporation                    Wired
+IP             MAC                Vendor                                Hostname           Connected to
+192.168.1.115  c0:e7:bf:da:3e:0a  Sichuan AI-Link Technology Co., Ltd.                     Wired
+192.168.1.116  d8:fb:d6:9d:e9:76  Amazon Technologies Inc.                                 Wired
+192.168.1.143  7c:88:99:e6:26:99  FN-LINK TECHNOLOGY Ltd.                                  Wired
+192.168.1.154  0a:8a:f1:06:c7:14                                        ME30               Wired
+192.168.1.171  30:a9:de:50:30:fa  LG Innotek                            LGwebOSTV          Wired
 ```
 
 ## How It Works
 
-1. **Login** — authenticates to the controller via `POST /api/login`
-2. **Fetch sites** — retrieves the list of available sites via `GET /api/self/sites` and validates that the requested site exists (or shows an interactive picker)
+1. **Login** — authenticates to the controller via `POST /api/auth/login` (UniFi OS) or `POST /api/login` (software controller)
+2. **Fetch sites** — retrieves the list of available sites via `GET /api/self/sites` through the proxy path (auto-detects direct path as fallback)
 3. **Fetch data** — retrieves the appropriate list based on export type (devices via `GET /api/s/<site>/stat/device`; clients via `GET /api/s/<site>/stat/sta`). With `-T both` both endpoints are queried sequentially.
 4. **Filter & sort** — optionally filters out offline devices, sorts by IP or name
-5. **Write output** — writes a TSV file to disk
-
-The session cookie is stored in a temporary file and cleaned up on exit via `trap`.
+5. **Write output** — writes a TSV file to disk, formatted with `column -t` when available
 
 ## Security
 
@@ -122,8 +128,7 @@ The session cookie is stored in a temporary file and cleaned up on exit via `tra
 ## Limitations
 
 - Works with UniFi controllers (not cloud / ui.com)
-- The `-p` option for UniFi OS (UDM-Pro, UXG) proxy-based API paths is provided **but has not been tested**. The default endpoint is `/api/s/<site>/stat/device`.
-- Tested with UniFi Network Controller v6 and v7
+- Tested with UniFi Network Controller v6, v7, and UniFi OS (UDM, UCG)
 
 ## License
 
