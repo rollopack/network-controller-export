@@ -29,12 +29,13 @@ USER="${USER:-admin}"
 SORT="ip"   # ip | desc
 OUTFILE=""
 HIDE_OFFLINE=false
+HIDE_LINK_COLUMN=false
 EXPORT_TYPE="${EXPORT_TYPE:-devices}"
 HAS_T=false
-VERSION="2.0.0"
+VERSION="2.1.0"
 
 usage() {
-  echo "Usage: $0 [-s <site_id>] [-c controller_url] [-u username] [-o output_file] [-O ip|desc] [-H] [-p api_path] [-T devices|clients|both]"
+  echo "Usage: $0 [-s <site_id>] [-c controller_url] [-u username] [-o output_file] [-O ip|desc] [-H] [-L] [-p api_path] [-T devices|clients|both]"
   echo "  -s <id>  : site ID (if omitted, pick interactively)"
   echo "  -c <url> : controller URL (default: $CONTROLLER)"
   echo "  -u <usr> : controller username (default: $USER)"
@@ -42,6 +43,7 @@ usage() {
   echo "  -O ip    : order by IP (default)"
   echo "  -O desc  : order by Description (name)"
   echo "  -H       : hide offline devices (applies to devices only)"
+  echo "  -L       : hide the Connected to column (devices and clients)"
   echo "  -p <path>: API path prefix (default: /proxy/network for UniFi OS)."
   echo "             Set to empty (-p \"\") for software controller (no proxy)."
   echo "  -T <type>: export type: devices (default), clients, both"
@@ -55,7 +57,7 @@ usage() {
   exit 1
 }
 
-while getopts "c:s:u:o:O:Hp:T:Vh" opt; do
+while getopts "c:s:u:o:O:HLp:T:Vh" opt; do
   case "$opt" in
     c) CONTROLLER="$OPTARG" ;;
     s) SITE="$OPTARG" ;;
@@ -68,6 +70,7 @@ while getopts "c:s:u:o:O:Hp:T:Vh" opt; do
       esac
       ;;
     H) HIDE_OFFLINE=true ;;
+    L) HIDE_LINK_COLUMN=true ;;
     p) API_PATH="$OPTARG" ;;
     T)
       HAS_T=true
@@ -228,6 +231,69 @@ case "$EXPORT_TYPE" in
   *)     TYPES=("$EXPORT_TYPE") ;;
 esac
 
+DEVICE_JSON=""
+
+render_device_group() {
+  local category="$1"
+  local title="$2"
+  local group_rows
+
+  group_rows="$(jq -r --arg category "$category" --arg sort "$SORT" \
+    --arg hide_offline "$HIDE_OFFLINE" --arg hide_link "$HIDE_LINK_COLUMN" '
+      def device_category:
+        (.type // .device_type // "" | ascii_downcase) as $device_type
+        | (.model // "" | ascii_upcase) as $model
+        | if ($device_type | test("usw|switch")) or ($model | test("^(USW|USL|US[0-9]|USF)")) then "Switch"
+          elif ($device_type | test("uap|access.?point")) or ($model | test("^(UAP|U[0-9]|BZ)")) then "AP"
+          else "Other" end;
+      def category_order:
+        if .category == "Switch" then 0
+        elif .category == "AP" then 1
+        else 2 end;
+      [.data[]] as $all_devices
+      | (reduce $all_devices[] as $device ({};
+          .[($device.mac // "" | ascii_downcase)] = ($device.name // "")
+        )) as $names
+      | [$all_devices[]
+         | select($hide_offline == "false" or .state == 1)
+         | . + {category: device_category}
+         | . + {
+             connected: (
+               (.uplink.uplink_device_name // .uplink_device_name // "") as $direct
+               | if $direct != "" then $direct
+                 else ($names[((.uplink.uplink_mac // .uplink_mac // "") | ascii_downcase)] // "")
+                 end
+             ),
+             port: (.uplink.uplink_remote_port_name // .uplink.uplink_remote_port // .uplink.remote_port // "")
+           }
+         | select(.category == $category)
+        ]
+      | (if $sort == "desc"
+         then sort_by([category_order, (.name // "")])
+         else sort_by([category_order, ((.ip // "") | split(".") | map(tonumber))])
+         end)
+      | .[]
+      | ([.ip // "", .mac // "", .model // "", .name // ""] +
+         (if $hide_link == "true" then [] else [
+           (if .connected == "" then ""
+            elif .port == "" then .connected
+            else "\(.connected) (port \(.port))"
+            end)
+         ] end)) | @tsv
+    ' <<< "$JSON")"
+
+  [[ -n "$group_rows" ]] || return 0
+
+  DEVICE_GROUPS_WRITTEN=true
+  printf '...::: %s :::...\n\n' "$title"
+  {
+    printf "IP\tMAC\tModel\tDescription"
+    if ! "$HIDE_LINK_COLUMN"; then printf "\tConnected to"; fi
+    printf "\n%s\n" "$group_rows"
+  } | if "$HAS_COLUMN"; then column -t -s $'\t'; else cat; fi
+  printf '\n'
+}
+
 for EXPORT_TYPE in "${TYPES[@]}"; do
 
 if [[ -z "$OUTFILE" ]]; then
@@ -261,6 +327,10 @@ if [[ "$RC" != "ok" ]]; then
   exit 1
 fi
 
+if [[ "$EXPORT_TYPE" == "devices" ]]; then
+  DEVICE_JSON="$JSON"
+fi
+
 COUNT="$(echo "$JSON" | jq '.data | length')"
 if [[ "$COUNT" -eq 0 ]]; then
   echo "Warning: no $LABEL_PLURAL found for site '$SITE'." >&2
@@ -269,91 +339,74 @@ fi
 echo "Writing output to $OUTFILE (order: $SORT) ..."
 
 if [[ "$EXPORT_TYPE" == "devices" ]]; then
-  if "$HAS_COLUMN"; then
-    {
-      echo "...::: Devices :::..."
-      echo
+  DEVICE_GROUPS_WRITTEN=false
+  {
+    render_device_group "Switch" "Switches"
+    render_device_group "AP" "Access Points"
+    render_device_group "Other" "Other devices"
+    if ! "$DEVICE_GROUPS_WRITTEN"; then
+      printf '...::: Devices :::...\n\n'
       {
-        printf "IP\tMAC\tModel\tDescription\n"
-        echo "$JSON" | jq -r --arg sort "$SORT" --arg hide_offline "$HIDE_OFFLINE" '
-          [ .data[]
-            | select($hide_offline == "false" or .state == 1)
-            | {ip, mac, model: (.model // ""), name}
-          ]
-          | (if $sort == "desc"
-             then
-               sort_by(.name)
-             else
-               sort_by((.ip // "") | split(".") | map(tonumber))
-             end)
-          | .[]
-          | "\(.ip)\t\(.mac)\t\(.model)\t\(.name)"
-        '
-      } | column -t -s $'\t'
-    } > "$OUTFILE"
-  else
-    {
-      echo "...::: Devices :::..."
-      echo
-      printf "IP\tMAC\tModel\tDescription\n"
-      echo "$JSON" | jq -r --arg sort "$SORT" --arg hide_offline "$HIDE_OFFLINE" '
-        [ .data[]
-          | select($hide_offline == "false" or .state == 1)
-          | {ip, mac, model: (.model // ""), name}
-        ]
-        | (if $sort == "desc"
-           then
-             sort_by(.name)
-           else
-             sort_by((.ip // "") | split(".") | map(tonumber))
-           end)
-        | .[]
-        | "\(.ip)\t\(.mac)\t\(.model)\t\(.name)"
-      '
-    } > "$OUTFILE"
-  fi
+        printf "IP\tMAC\tModel\tDescription"
+        if ! "$HIDE_LINK_COLUMN"; then printf "\tConnected to"; fi
+        printf "\n"
+      } | if "$HAS_COLUMN"; then column -t -s $'\t'; else cat; fi
+    fi
+  } > "$OUTFILE"
 else
-  if "$HAS_COLUMN"; then
+  CLIENT_DEVICE_JSON='{"data":[]}'
+  if ! "$HIDE_LINK_COLUMN"; then
+    if [[ -z "$DEVICE_JSON" ]]; then
+      echo "Fetching device uplinks for client mapping ..."
+      DEVICE_JSON="$(curl -sk -b "$COOKIE_FILE" \
+        "$CONTROLLER${API_PATH}/api/s/$SITE/stat/device")" || {
+        echo "Error: failed to fetch device uplinks from $CONTROLLER${API_PATH}/api/s/$SITE/stat/device" >&2
+        exit 1
+      }
+      DEVICE_RC="$(echo "$DEVICE_JSON" | jq -r '.meta.rc')"
+      if [[ "$DEVICE_RC" != "ok" ]]; then
+        echo "API error while fetching device uplinks: meta.rc=$DEVICE_RC" >&2
+        echo "$DEVICE_JSON" | jq . >&2
+        exit 1
+      fi
+    fi
+    CLIENT_DEVICE_JSON="$DEVICE_JSON"
+  fi
+
+  {
+    echo "...::: Clients :::..."
+    echo
     {
-      echo "...::: Clients :::..."
-      echo
-      {
-        printf "IP\tMAC\tVendor\tHostname\tConnected to\n"
-        echo "$JSON" | jq -r --arg sort "$SORT" '
-          [ .data[]
-            | {ip, mac, vendor: (.oui // ""), hostname: (.hostname // ""), ap: (.ap_name // "Wired")}
-          ]
-          | (if $sort == "desc"
-             then
-               sort_by(.hostname)
-             else
-               sort_by((.ip // "") | split(".") | map(tonumber))
-             end)
-          | .[]
-          | "\(.ip)\t\(.mac)\t\(.vendor)\t\(.hostname)\t\(.ap)"
-        '
-      } | column -t -s $'\t'
-    } > "$OUTFILE"
-  else
-    {
-      echo "...::: Clients :::..."
-      echo
-      printf "IP\tMAC\tVendor\tHostname\tConnected to\n"
-      echo "$JSON" | jq -r --arg sort "$SORT" '
-        [ .data[]
-          | {ip, mac, vendor: (.oui // ""), hostname: (.hostname // ""), ap: (.ap_name // "Wired")}
+      printf "IP\tMAC\tVendor\tHostname"
+      if ! "$HIDE_LINK_COLUMN"; then printf "\tConnected to"; fi
+      printf "\n"
+      printf '%s\n%s\n' "$JSON" "$CLIENT_DEVICE_JSON" | jq -sr --arg sort "$SORT" --arg hide_link "$HIDE_LINK_COLUMN" '
+        .[0] as $clients
+        | (reduce (.[1].data // [])[] as $device ({};
+          .[($device.mac // "" | ascii_downcase)] = ($device.name // "")
+        )) as $switches
+        |
+        [$clients.data[]
+          | (.ap_name // "") as $ap_name
+          | ((.sw_mac // "") | ascii_downcase) as $switch_mac
+          | ($switches[$switch_mac] // "") as $switch_name
+          | (.sw_port // "") as $switch_port
+          | {ip, mac, vendor: (.oui // ""), hostname: (.hostname // ""),
+             connected: (if $ap_name != "" then $ap_name
+               elif $switch_name != "" and ($switch_port | tostring) != "" then "\($switch_name) (port \($switch_port))"
+               elif $switch_name != "" then $switch_name
+               else "Wired" end)}
         ]
         | (if $sort == "desc"
-           then
-             sort_by(.hostname)
-           else
-             sort_by((.ip // "") | split(".") | map(tonumber))
+           then sort_by(.hostname)
+           else sort_by((.ip // "") | split(".") | map(tonumber))
            end)
         | .[]
-        | "\(.ip)\t\(.mac)\t\(.vendor)\t\(.hostname)\t\(.ap)"
+        | ([.ip // "", .mac // "", .vendor // "", .hostname // ""] +
+           (if $hide_link == "true" then [] else [.connected] end)) | @tsv
       '
-    } > "$OUTFILE"
-  fi
+    } | if "$HAS_COLUMN"; then column -t -s $'\t'; else cat; fi
+  } > "$OUTFILE"
 fi
 
 echo "Done. File generated: $OUTFILE"
