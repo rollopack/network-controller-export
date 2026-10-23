@@ -1,147 +1,133 @@
-# UniFi Export
+# Network Controller Export
 
-Export UniFi network devices (APs, switches, gateways) or active clients from a UniFi controller to a tab-separated file. Optimized for **UniFi OS** (UDM, UCG, UXG) — also works with network controllers via `-p ""`.
+Export devices and active clients from Ubiquiti UniFi and TP-Link Omada controllers. Each controller has a standalone script and its own authentication flow.
 
-## Requirements
+## Common
+
+### Requirements and installation
 
 - Bash 4+
 - [curl](https://curl.se/)
 - [jq](https://jqlang.github.io/jq/)
-- `column` (from util-linux, usually pre-installed) — optional, falls back to raw TSV if missing
-
-## Installation
+- `column` (optional; without it, output is not aligned)
 
 ```bash
-curl -LO https://raw.githubusercontent.com/rollopack/unifi-network-export/main/unifi_export.sh
-chmod +x unifi_export.sh
+git clone https://github.com/rollopack/network-controller-export.git
+cd network-controller-export
+chmod +x unifi_export.sh omada_export.sh
 ```
 
-## Usage
+### Shared options
+
+| Flag | Argument | Description | Default |
+|------|----------|-------------|---------|
+| `-s` | `site` | Site ID; Omada also accepts the 1-based number in its site list | Prompt if omitted |
+| `-o` | `file` | Output file; relative paths are saved under `exports/` | Controller-specific filename |
+| `-O` | `ip` / `desc` | Sort by IP or description | `ip` |
+| `-H` | — | Hide offline devices | Off |
+| `-L` | — | Hide the `Connected to` column | Show by default |
+| `-T` | `devices` / `clients` / `both` | Select export type | `devices` |
+| `-V` | — | Show version | — |
+| `-h` | — | Show help | — |
+
+### Output
+
+Both scripts write to the Git-ignored `exports/` directory by default. A relative path passed with `-o` is placed there too; an absolute path is used as given. Output is a text report with tab-separated columns, aligned with `column` when available. It can be imported into Excel, Google Sheets, or another spreadsheet application.
+
+Device exports group rows under **Switches**, **Access Points**, and **Other devices**. Device columns are IP, MAC, Model, Description, and `Connected to`. Client exports contain IP, MAC, Vendor, Hostname, and `Connected to`. Use `-L` to omit the connection column; Omada omits it automatically when the API provides no connection details.
+
+### Shared security notes
+
+- Local configuration files and generated exports are ignored by Git.
+- Do not pass passwords or client secrets as command-line arguments.
+- Keep any configuration file containing a secret owner-only (`chmod 600`). If the filesystem cannot apply restrictive permissions, the relevant script warns and asks for the secret interactively instead of reading it from the file.
+
+## UniFi
+
+`unifi_export.sh` logs in to the controller API. It supports UniFi controllers, including UniFi OS; it does not support a cloud / ui.com account.
+
+### Usage and options
 
 ```bash
 ./unifi_export.sh [options]
 ```
 
-If `-s` is omitted, the script shows an interactive list of available sites to choose from. In interactive mode, after selecting the site you are also asked what to export (Devices, Clients, or Both).
-
-### Options
+If `-s` is omitted, the script lists available sites for interactive selection. If no export type is configured or passed with `-T`, it asks whether to export devices, clients, or both.
 
 | Flag | Argument | Description | Default |
 |------|----------|-------------|---------|
 | `-c` | `url` | Controller URL | `https://uos.unifi.net:11443` |
-| `-s` | `id` | Site ID | prompt interactively if omitted |
-| `-u` | `username` | UniFi admin username (not ui.com account) | `admin` |
-| `-o` | `file` | Output file path | `Unifi-<type>_<site>.txt` |
-| `-O` | `ip` / `desc` | Sort order | `ip` |
-| `-H` | — | Hide offline devices (state != 1) — devices only | Off (export all) |
-| `-L` | — | Hide the `Connected to` column in device and client exports | Show |
-| `-p` | `path` | API path prefix. Default `/proxy/network` for UniFi OS. Use `-p ""` for software controller (no proxy) | `/proxy/network` |
-| `-T` | `devices` / `clients` / `both` | Export type: devices, active clients, or both | `devices` |
-| `-V` | — | Show version | — |
-| `-h` | — | Show help | — |
+| `-u` | `username` | UniFi admin username (not a ui.com account) | `admin` |
+| `-p` | `path` | API path prefix; use `-p ""` for a software controller without the proxy | `/proxy/network` |
 
-Password is prompted interactively. It is never accepted as a command-line argument.
+### Configuration and examples
 
-### Examples
+Copy the example to create the ignored local configuration file:
 
 ```bash
-# Interactive site selection (UniFi OS assumed by default)
+cp unifi.conf.example unifi.conf
+```
+
+It supports controller URL, site, username, API path, sorting, export type, filters, and an optional `PASSWORD`. The password is read from `unifi.conf` only when the file is owner-only (`chmod 600`). Otherwise, the script warns, ignores the configured password, and prompts interactively. A password is never accepted as a command-line argument.
+
+```bash
+# Interactive site and export selection
 ./unifi_export.sh
 
-# UniFi OS (default, proxy auto-detected)
+# Export devices from a UniFi OS controller
 ./unifi_export.sh -s abcdef12
 
-# Software controller (disable proxy)
-./unifi_export.sh -s abcdef12 -p ""
+# Software controller, clients only
+./unifi_export.sh -s abcdef12 -p "" -T clients
 
-# Full options on UniFi OS
-./unifi_export.sh \
-  -c https://192.168.1.1 \
-  -s abcdef12 \
-  -u admin \
-  -o my_devices.txt \
-  -O desc \
-  -H
-
-# Network controller API at custom URL
-./unifi_export.sh \
-  -c https://controller.local:8443 \
-  -s abcdef12 \
-  -p ""
-
-# Export active clients
-./unifi_export.sh -T clients
-
-# Export both devices and clients
-./unifi_export.sh -T both
-
-# Using environment variables
-export CONTROLLER=https://192.168.1.1
-export SITE=abcdef12
-export USER=admin
-./unifi_export.sh
+# Export both datasets with a custom output name
+./unifi_export.sh -s abcdef12 -T both -o my_export.txt
 ```
 
-## Output
+### UniFi details
 
-A tab-separated file, formatted with `column -t` when available for perfect alignment. The file can be opened in Excel, Google Sheets, or any spreadsheet tool (tab-delimited import).
+- Login uses `POST /api/auth/login` on UniFi OS or `POST /api/login` on a software controller.
+- The script fetches site, device, and client data from the controller API. With `-T both`, device data is reused for client-link resolution.
+- Device and port details depend on fields returned by the controller; unavailable values may be blank or shown as `Wired` for clients.
+- Tested with UniFi Network Controller v6 and v7, and UniFi OS (UDM, UCG).
 
-**Devices** (`-T devices`, default): devices are listed under separate **Switches**, **Access Points**, and **Other devices** headings. Each section has IP, MAC, Model, Description, and Connected to columns; `-O` controls sorting within each section.
+## Omada
 
-```
-...::: Switches :::...
+`omada_export.sh` uses the Omada Open API with Client Credentials authentication.
 
-IP               MAC                Model  Description       Connected to
-192.168.178.221  18:e8:29:45:6e:97  US8P60 Switch 1 | Rack
-192.168.178.222  ac:8b:a9:ba:4c:0b  USF5P  Switch 2
+### Configuration and usage
 
-...::: Access Points :::...
+Create the ignored local configuration file and restrict its permissions:
 
-IP               MAC                Model  Description       Connected to
-192.168.178.231  f0:9f:c2:f0:3e:6c  U7LT   AP 1              Switch 1 | Rack (port 8)
-192.168.178.232  24:a4:3c:0c:8b:03  BZ2    AP 5 | Garage     Switch 2 (port 3)
-```
-
-**Clients** (`-T clients`): IP, MAC, Vendor, Hostname, Connected to
-
-```
-...::: Clients :::...
-
-IP             MAC                Vendor                                Hostname           Connected to
-192.168.1.115  c0:e7:bf:da:3e:0a  Sichuan AI-Link Technology Co., Ltd.                     Switch 1 | Rack (port 4)
-192.168.1.116  d8:fb:d6:9d:e9:76  Amazon Technologies Inc.                                 Switch 2 (port 7)
-192.168.1.143  7c:88:99:e6:26:99  FN-LINK TECHNOLOGY Ltd.                                  AP 1
-192.168.1.154  0a:8a:f1:06:c7:14                                        ME30               Wired
-192.168.1.171  30:a9:de:50:30:fa  LG Innotek                            LGwebOSTV          Wired
+```bash
+cp omada.conf.example omada.conf
+chmod 600 omada.conf
 ```
 
-## How It Works
+Set the **Interface Access Address**, **Omada ID**, **Client ID**, and **Client Secret** from **Global View → Settings → Platform Integration → Open API**. `OMADA_SITE_ID` is optional. If unset, the script lists available sites; `-s` accepts either the site ID or its 1-based list number. Set `OMADA_INSECURE_TLS=true` only when the controller uses a self-signed certificate. If the filesystem cannot apply `chmod 600`, remove the secret from the file; the script warns and prompts for it.
 
-1. **Login** — authenticates to the controller via `POST /api/auth/login` (UniFi OS) or `POST /api/login` (software controller)
-2. **Fetch sites** — retrieves the list of available sites via `GET /api/self/sites` through the proxy path (auto-detects direct path as fallback)
-3. **Fetch data** — retrieves the appropriate list based on export type (devices via `GET /api/s/<site>/stat/device`; clients via `GET /api/s/<site>/stat/sta`). Client exports also use device uplink data to resolve wired clients' switch names. With `-T both`, device data is reused.
-4. **Filter & sort** — optionally filters out offline devices, sorts by IP or name
-5. **Write output** — writes a TSV file to disk, formatted with `column -t` when available
+```bash
+./omada_export.sh [options]
+./omada_export.sh -T both
+./omada_export.sh -s <site_id_or_list_number> -T devices -O desc
+```
 
-## Security
+The default files are `exports/Omada-devices_<site>.txt` and `exports/Omada-clients_<site>.txt`.
 
-- Password is read via `read -s` (never echoed, never in process list)
-- Cookie file is written to `mktemp` and deleted on exit
-- No credentials are stored on disk
-- The script does **not** support passing the password as a command-line argument (avoiding shell history leaks)
+### Omada details
 
-## Limitations
-
-- Works with UniFi controllers (not cloud / ui.com)
-- Tested with UniFi Network Controller v6, v7, and UniFi OS (UDM, UCG)
-- Switch and port details depend on the fields returned by the controller; they may be blank (devices) or show `Wired` (clients) if unavailable.
+- The script requests an Open API access token, fetches sites and paginated device/client lists, then formats the output.
+- `Connected to` is omitted when the API provides no connection details.
+- API response and uplink fields vary by operation and controller release; verify them against the target controller.
+- Authorization and site-list request formats follow TP-Link's [Open API access guide](https://support.omadanetworks.com/sg/document/109315/) and [Open API documentation](https://omada-northbound-docs.tplinkcloud.com/).
 
 ## Tests
 
-Run the offline export tests with mocked controller responses:
+Run the offline tests using mocked controller responses:
 
 ```bash
 bash tests/test_export.sh
+bash tests/test_omada_export.sh
 ```
 
 ## License

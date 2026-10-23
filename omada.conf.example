@@ -1,0 +1,7 @@
+# Copy to omada.conf and protect it with: chmod 600 omada.conf
+OMADA_INTERFACE_ACCESS_ADDRESS=https://controller.example:8043
+OMADA_ID=replace-with-omada-id
+OMADA_CLIENT_ID=replace-with-client-id
+OMADA_CLIENT_SECRET=replace-with-client-secret
+OMADA_SITE_ID=
+OMADA_INSECURE_TLS=false

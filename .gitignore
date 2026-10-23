@@ -2,3 +2,6 @@
 *.log
 tmp/
 .gitignore
+/omada.conf
+/unifi.conf
+/exports/

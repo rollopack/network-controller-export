@@ -1,0 +1,12 @@
+# Optional settings for unifi_export.sh. Keep unifi.conf ignored by Git.
+# A password is only read from unifi.conf when permissions are owner-only (600).
+# If chmod is unsupported by the filesystem, the script warns and prompts instead.
+CONTROLLER=https://uos.unifi.net:11443
+SITE=
+USER=admin
+PASSWORD=replace-with-password
+API_PATH=/proxy/network
+SORT=ip
+EXPORT_TYPE=devices
+HIDE_OFFLINE=false
+HIDE_LINK_COLUMN=false

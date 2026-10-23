@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # unifi_export.sh — Export UniFi device inventory to a TSV file
-# https://github.com/rollopack/unifi-network-export
+# https://github.com/rollopack/network-controller-export
 #
 # Copyright (C) 2026 Rolland Gabriel (https://github.com/rollopack)
 #
@@ -21,6 +21,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+CONFIG_FILE="${UNIFI_CONFIG_FILE:-$SCRIPT_DIR/unifi.conf}"
+EXPORT_DIR="${EXPORT_DIR:-$SCRIPT_DIR/exports}"
+
 # Default
 CONTROLLER="${CONTROLLER:-https://uos.unifi.net:11443}"
 SITE="${SITE:-}"
@@ -31,15 +35,70 @@ OUTFILE=""
 HIDE_OFFLINE=false
 HIDE_LINK_COLUMN=false
 EXPORT_TYPE="${EXPORT_TYPE:-devices}"
+PASSWORD=""
 HAS_T=false
-VERSION="2.1.0"
+VERSION="2.2.0"
+CONFIG_HAS_EXPORT_TYPE=false
+CONFIG_CAN_USE_PASSWORD=false
+
+if [[ -f "$CONFIG_FILE" ]]; then
+  CONFIG_MODE="$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || stat -f '%Lp' "$CONFIG_FILE" 2>/dev/null || true)"
+  if [[ "$CONFIG_MODE" =~ ^[0-7]{3,4}$ ]] && (( (8#$CONFIG_MODE & 077) == 0 )); then
+    CONFIG_CAN_USE_PASSWORD=true
+  else
+    echo "Warning: $CONFIG_FILE is not owner-only; continuing, but any password there is ignored and requested interactively." >&2
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    if [[ "$line" != *=* ]]; then
+      echo "Error: invalid configuration line in $CONFIG_FILE." >&2
+      exit 1
+    fi
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      CONTROLLER) CONTROLLER="$value" ;;
+      SITE) SITE="$value" ;;
+      USER) USER="$value" ;;
+      PASSWORD)
+        if "$CONFIG_CAN_USE_PASSWORD"; then PASSWORD="$value"; fi
+        ;;
+      API_PATH) API_PATH="$value" ;;
+      SORT)
+        case "$value" in
+          ip|desc) SORT="$value" ;;
+          *) echo "Invalid SORT in $CONFIG_FILE; use 'ip' or 'desc'." >&2; exit 1 ;;
+        esac
+        ;;
+      EXPORT_TYPE)
+        if [[ -n "$value" ]]; then
+          case "$value" in
+            devices|clients|both) EXPORT_TYPE="$value"; CONFIG_HAS_EXPORT_TYPE=true ;;
+            *) echo "Invalid EXPORT_TYPE in $CONFIG_FILE." >&2; exit 1 ;;
+          esac
+        fi
+        ;;
+      HIDE_OFFLINE|HIDE_LINK_COLUMN)
+        if [[ "$value" != true && "$value" != false ]]; then
+          echo "$key in $CONFIG_FILE must be true or false." >&2
+          exit 1
+        fi
+        if [[ "$key" == HIDE_OFFLINE ]]; then HIDE_OFFLINE="$value"; else HIDE_LINK_COLUMN="$value"; fi
+        ;;
+      *) echo "Error: unknown key '$key' in $CONFIG_FILE." >&2; exit 1 ;;
+    esac
+  done < "$CONFIG_FILE"
+fi
+
+if "$CONFIG_HAS_EXPORT_TYPE"; then HAS_T=true; fi
 
 usage() {
   echo "Usage: $0 [-s <site_id>] [-c controller_url] [-u username] [-o output_file] [-O ip|desc] [-H] [-L] [-p api_path] [-T devices|clients|both]"
   echo "  -s <id>  : site ID (if omitted, pick interactively)"
   echo "  -c <url> : controller URL (default: $CONTROLLER)"
   echo "  -u <usr> : controller username (default: $USER)"
-  echo "  -o <file>: output file (default: Unifi-<type>_<site>.txt)"
+  echo "  -o <file>: output file (default: exports/Unifi-<type>_<site>.txt)"
   echo "  -O ip    : order by IP (default)"
   echo "  -O desc  : order by Description (name)"
   echo "  -H       : hide offline devices (applies to devices only)"
@@ -47,6 +106,7 @@ usage() {
   echo "  -p <path>: API path prefix (default: /proxy/network for UniFi OS)."
   echo "             Set to empty (-p \"\") for software controller (no proxy)."
   echo "  -T <type>: export type: devices (default), clients, both"
+  echo "  Settings: $CONFIG_FILE (a configured password is used only with owner-only file permissions)"
   echo "  -V       : show version"
   echo
   echo "Example:"
@@ -100,34 +160,47 @@ echo "This is free software, and you are welcome to redistribute it"
 echo "under certain conditions."
 echo
 
-read -s -p "Password for user '$USER': " PASS
-echo
+PASS="$PASSWORD"
+if [[ -z "$PASS" ]]; then
+  read -r -s -p "Password for user '$USER': " PASS
+  echo
+fi
 
+umask 077
 COOKIE_FILE="$(mktemp)"
-trap 'rm -f "$COOKIE_FILE"' EXIT
+LOGIN_SECRET_FILE="$(mktemp)"
+LOGIN_BODY_FILE="$(mktemp)"
+MFA_TOKEN_FILE="$(mktemp)"
+MFA_SESSION_FILE="$(mktemp)"
+MFA_COOKIE_FILE="$(mktemp)"
+printf '%s' "$PASS" > "$LOGIN_SECRET_FILE"
+trap 'rm -f -- "$COOKIE_FILE" "$LOGIN_SECRET_FILE" "$LOGIN_BODY_FILE" "$MFA_TOKEN_FILE" "$MFA_SESSION_FILE" "$MFA_COOKIE_FILE"' EXIT
 
 login_try() {
   local ep="$1"
   local mfa_token="${2:-}"
   local mfa_session="${3:-}"
   local mfa_cookie="${4:-}"
-  local data="{\"username\":\"$USER\",\"password\":\"$PASS\"}"
-  if [[ -n "$mfa_token" && -n "$mfa_session" ]]; then
-    data="{\"username\":\"$USER\",\"password\":\"$PASS\",\"mfaToken\":\"$mfa_token\",\"mfaSession\":\"$mfa_session\"}"
-  elif [[ -n "$mfa_token" ]]; then
-    data="{\"username\":\"$USER\",\"password\":\"$PASS\",\"mfaToken\":\"$mfa_token\"}"
-  fi
+  printf '%s' "$mfa_token" > "$MFA_TOKEN_FILE"
+  printf '%s' "$mfa_session" > "$MFA_SESSION_FILE"
+  printf '%s' "$mfa_cookie" > "$MFA_COOKIE_FILE"
+  jq -n --arg username "$USER" --rawfile password "$LOGIN_SECRET_FILE" \
+    --rawfile mfa_token "$MFA_TOKEN_FILE" --rawfile mfa_session "$MFA_SESSION_FILE" \
+    '{username:$username,password:$password} + (if $mfa_token != "" and $mfa_session != "" then {mfaToken:$mfa_token,mfaSession:$mfa_session} elif $mfa_token != "" then {mfaToken:$mfa_token} else {} end)' \
+    > "$LOGIN_BODY_FILE"
+  local curl_cookie_args=()
+  if [[ -n "$mfa_cookie" ]]; then curl_cookie_args=(-b "$COOKIE_FILE" -b "$MFA_COOKIE_FILE"); fi
   # Login is always at controller root (OS-level endpoint)
   if [[ -n "$mfa_cookie" ]]; then
-    curl -sk -c "$COOKIE_FILE" -b "$COOKIE_FILE" -b "$mfa_cookie" \
+    curl -sk -c "$COOKIE_FILE" "${curl_cookie_args[@]}" \
       -X POST "$CONTROLLER$ep" \
       -H "Content-Type: application/json" \
-      -d "$data"
+      --data-binary "@$LOGIN_BODY_FILE"
   else
     curl -sk -c "$COOKIE_FILE" \
       -X POST "$CONTROLLER$ep" \
       -H "Content-Type: application/json" \
-      -d "$data"
+      --data-binary "@$LOGIN_BODY_FILE"
   fi
 }
 
@@ -297,8 +370,11 @@ render_device_group() {
 for EXPORT_TYPE in "${TYPES[@]}"; do
 
 if [[ -z "$OUTFILE" ]]; then
-  OUTFILE="Unifi-${EXPORT_TYPE}_${SITE}.txt"
+  OUTFILE="$EXPORT_DIR/Unifi-${EXPORT_TYPE}_${SITE}.txt"
+elif [[ "$OUTFILE" != /* ]]; then
+  OUTFILE="$EXPORT_DIR/$OUTFILE"
 fi
+mkdir -p -- "$(dirname -- "$OUTFILE")"
 
 case "$EXPORT_TYPE" in
   devices)
