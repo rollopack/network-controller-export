@@ -36,11 +36,33 @@ Both scripts write to the Git-ignored `exports/` directory by default. A relativ
 
 Device exports group rows under **Switches**, **Access Points**, and **Other devices**. Device columns are IP, MAC, Model, Description, and `Connected to`. Client exports contain IP, MAC, Vendor, Hostname, and `Connected to`. Use `-L` to omit the connection column; Omada omits it automatically when the API provides no connection details.
 
-### Shared security notes
+With `-T both`, each controller writes separate device and client reports. Here is a simplified UniFi-format example with illustrative values; Omada may omit `Connected to` when the API has no connection details.
 
-- Local configuration files and generated exports are ignored by Git.
-- Do not pass passwords or client secrets as command-line arguments.
-- Keep any configuration file containing a secret owner-only (`chmod 600`). If the filesystem cannot apply restrictive permissions, the relevant script warns and asks for the secret interactively instead of reading it from the file.
+**Devices report**
+
+```text
+...::: Switches :::...
+
+IP           MAC                Model    Description  Connected to
+192.0.2.10   02:00:00:00:00:10  USW-24   Core Switch
+
+...::: Access Points :::...
+
+IP           MAC                Model    Description  Connected to
+192.0.2.11   02:00:00:00:00:11  U6-Lite  AP Lobby     Core Switch (port 7)
+192.0.2.12   02:00:00:00:00:12  U7IW     AP Bar       Core Switch (port 8)
+```
+
+**Clients report**
+
+```text
+...::: Clients :::...
+
+IP           MAC                Vendor          Hostname  Connected to
+192.0.2.20   02:00:00:00:00:20  Example Vendor  laptop    AP Bar 
+192.0.2.21   02:00:00:00:00:21  Example 2       tablet    AP Lobby
+```
+
 
 ## UniFi
 
